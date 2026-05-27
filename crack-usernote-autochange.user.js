@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         크랙 채팅모드별 유저노트 자동변경
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  crack.wrtn.ai 채팅방별로 채팅 모드 4개 유저노트를 저장하고, 채팅 모드 변경 시 자동 적용합니다.
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
@@ -409,7 +409,7 @@
 
         lastForcedUiKey = forceKey;
 
-        console.log('[채팅방별 채팅모드 유저노트] 유저노트 표시 UI 갱신 완료', {
+        console.log('[채팅모드별 유저노트 자동변경] 유저노트 표시 UI 갱신 완료', {
             mode: lastAppliedUserNoteMode,
             chatId,
             length: countChars(lastAppliedUserNoteContent),
@@ -488,8 +488,35 @@
         }
 
         #mun-panel h3 {
-            margin: 0 0 10px 0;
             font-size: 15px;
+            color: #1A1918;
+        }
+
+        .mun-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .mun-panel-header h3 {
+            margin: 0;
+        }
+
+        #mun-close-btn {
+            border: none;
+            background: transparent;
+            color: #61605A;
+            font-size: 22px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 4px 7px;
+            border-radius: 6px;
+        }
+
+        #mun-close-btn:hover {
+            background: rgba(0,0,0,0.06);
             color: #1A1918;
         }
 
@@ -665,12 +692,14 @@
         const panel = document.createElement('div');
         panel.id = 'mun-panel';
         panel.innerHTML = `
-            <h3>채팅방별 채팅모드 유저노트</h3>
+            <div class="mun-panel-header">
+                <h3>채팅모드별 유저노트 자동변경</h3>
+                <button id="mun-close-btn" type="button" aria-label="닫기">×</button>
+            </div>
+
             <div id="mun-status">준비되었습니다.</div>
 
             <div class="mun-top-actions">
-                <button id="mun-refresh-btn" class="mun-btn gray">새로고침</button>
-                <button id="mun-fetch-current-btn" class="mun-btn gray">현재 유저노트 확인</button>
                 <button id="mun-export-btn" class="mun-btn gray">전체 내보내기</button>
                 <button id="mun-import-btn" class="mun-btn gray">전체 가져오기</button>
             </div>
@@ -713,12 +742,11 @@
             }
         });
 
-        document.getElementById('mun-refresh-btn')?.addEventListener('click', () => {
-            renderModeSlots();
-            setStatus('목록을 새로고침했습니다.');
+        document.getElementById('mun-close-btn')?.addEventListener('click', () => {
+            panel.classList.remove('show');
+            setPanelOpen(false);
         });
 
-        document.getElementById('mun-fetch-current-btn')?.addEventListener('click', checkCurrentUserNote);
         document.getElementById('mun-export-btn')?.addEventListener('click', exportModeNotes);
         document.getElementById('mun-import-btn')?.addEventListener('click', importModeNotes);
 
@@ -926,7 +954,7 @@
             const confirmed = await fetchCurrentUserNote(chatId).catch(() => null);
 
             if (confirmed) {
-                console.log('[채팅방별 채팅모드 유저노트] 서버 확인값', {
+                console.log('[채팅모드별 유저노트 자동변경] 서버 확인값', {
                     chatId,
                     mode: chatMode,
                     matched: confirmed.content === note.content,
@@ -944,30 +972,6 @@
         }
     }
 
-    async function checkCurrentUserNote() {
-        const chatId = parseChatId();
-
-        if (!chatId) {
-            setStatus('채팅방 페이지에서만 확인할 수 있습니다.');
-            showToast('채팅방 페이지에서만 확인할 수 있습니다.');
-            return;
-        }
-
-        try {
-            setStatus('현재 유저노트를 확인하는 중입니다...');
-
-            const current = await fetchCurrentUserNote(chatId);
-            const preview = previewText(current.content, 180);
-
-            setStatus(`현재 서버 유저노트: ${preview} / 확장 모드: ${current.isExtend ? '켜짐' : '꺼짐'}`);
-            showToast('현재 유저노트 확인 완료');
-        } catch (err) {
-            console.error('[현재 유저노트 확인]', err);
-            setStatus(err.message || '현재 유저노트 확인 중 오류가 발생했습니다.');
-            showToast('확인 실패');
-        }
-    }
-
     function exportModeNotes() {
         const chatId = parseChatId();
 
@@ -980,7 +984,7 @@
         const notes = getModeNotes();
 
         const payload = {
-            version: 3,
+            version: 1,
             exportedAt: new Date().toISOString(),
             type: 'crack_chat_room_mode_user_notes',
             sourceChatId: chatId,
@@ -1097,7 +1101,7 @@
                         const chatIdFromEvent = parsed?.eventProperties?.chat_id;
                         const chatId = chatIdFromEvent || parseChatId();
 
-                        console.log('[채팅방별 채팅모드 유저노트 감지]', {
+                        console.log('[채팅모드별 유저노트 자동변경 감지]', {
                             chatId,
                             chatMode,
                         });
@@ -1108,7 +1112,7 @@
                     }
                 }
             } catch (err) {
-                console.warn('[채팅방별 채팅모드 유저노트 감지 실패]', err);
+                console.warn('[채팅모드별 유저노트 자동변경 감지 실패]', err);
             }
 
             return originalFetch.apply(this, args);
