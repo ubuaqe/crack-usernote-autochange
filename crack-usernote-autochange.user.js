@@ -607,40 +607,36 @@
 
         textarea.dataset.modeUserNoteDraftTrackerAttached = '1';
 
-        textarea.addEventListener('input', () => {
+        const capture = () => {
+            if (suppressDraftCapture) return;
             captureEditingUserNoteDraft(textarea);
-        });
+        };
 
-        textarea.addEventListener('keydown', () => {
-            setTimeout(() => {
-                captureEditingUserNoteDraft(textarea);
-            }, 0);
+        textarea.addEventListener('input', capture);
+        textarea.addEventListener('change', capture);
+        textarea.addEventListener('keyup', capture);
+        textarea.addEventListener('paste', () => {
+            setTimeout(capture, 0);
         });
+        textarea.addEventListener('compositionend', capture);
     }
 
     function isLikelyUserNoteSaveButton(button) {
         if (!button) return false;
 
-        const text = (button.textContent || '').trim();
+        const text = (button.textContent || '').replace(/\s+/g, '').trim();
+        const ariaLabel = (button.getAttribute('aria-label') || '').replace(/\s+/g, '').trim();
+        const title = (button.getAttribute('title') || '').replace(/\s+/g, '').trim();
+        const type = (button.getAttribute('type') || '').toLowerCase();
 
-        if (
-            text === '저장' ||
-            text === '완료' ||
-            text.includes('저장') ||
-            text.includes('완료') ||
-            text.includes('확인')
-        ) {
-            return true;
-        }
-
-        const ariaLabel = button.getAttribute('aria-label') || '';
-        const title = button.getAttribute('title') || '';
+        const joined = `${text} ${ariaLabel} ${title}`;
 
         return (
-            ariaLabel.includes('저장') ||
-            ariaLabel.includes('완료') ||
-            title.includes('저장') ||
-            title.includes('완료')
+            joined.includes('수정') ||
+            joined.includes('저장') ||
+            joined.includes('완료') ||
+            joined.includes('확인') ||
+            type === 'submit'
         );
     }
 
@@ -649,27 +645,42 @@
 
         saveInterceptorAttached = true;
 
-        document.addEventListener('click', event => {
+        const handleSave = event => {
             const button = event.target?.closest?.('button');
             if (!button) return;
 
             const textarea = findVisibleUserNoteTextarea();
             if (!textarea) return;
 
-            const root = getUserNoteRootFromTextarea(textarea);
-            if (root && !root.contains(button)) return;
+            const dialog = textarea.closest('[role="dialog"]');
+
+            if (dialog && !dialog.contains(button)) return;
 
             if (!isLikelyUserNoteSaveButton(button)) return;
+
+            const buttonText = (button.textContent || '').replace(/\s+/g, '').trim();
+
+            console.log('[채팅모드별 유저노트 자동변경] 유저노트 저장/수정 버튼 감지', {
+                buttonText,
+                disabled: button.disabled,
+                textareaLength: countChars(textarea.value || ''),
+            });
+
+            if (button.disabled) {
+                console.log('[채팅모드별 유저노트 자동변경] 수정 버튼이 disabled 상태라 확정 저장을 건너뜁니다.');
+                return;
+            }
 
             captureEditingUserNoteDraft(textarea);
 
             clearTimeout(saveCommitTimer);
             saveCommitTimer = setTimeout(() => {
                 commitEditingUserNoteDraft(textarea);
-            }, 50);
+            }, 80);
+        };
 
-            console.log('[채팅모드별 유저노트 자동변경] 유저노트 저장 버튼 감지');
-        }, true);
+        document.addEventListener('pointerdown', handleSave, true);
+        document.addEventListener('click', handleSave, true);
     }
 
     async function syncVisibleUserNoteUIFromAppliedThenServer() {
