@@ -36,15 +36,11 @@
     let lastAppliedUserNoteChatId = '';
     let lastAppliedUserNoteMode = '';
 
-    let forceUiUpdateScheduled = false;
-    let lastForcedUiKey = '';
     let lastSeenUserNoteTextarea = null;
-
-    let userNoteManualEditing = false;
+    let lastSyncedUserNoteKey = '';
+    let userNoteUiSyncScheduled = false;
     let lastUserNoteInputAt = 0;
-    let suppressUserNotePresetSync = false;
-    let userNoteSaveSyncTimer = null;
-    let globalSaveButtonSyncAttached = false;
+    let suppressUserNoteInputTrack = false;
 
     function parseChatId() {
         const m = location.pathname.match(/\/stories\/[^/]+\/episodes\/([^/?#]+)/);
@@ -215,7 +211,7 @@
         lastAppliedUserNoteChatId = chatId || '';
         lastAppliedUserNoteMode = modeKey || '';
 
-        lastForcedUiKey = '';
+        lastSyncedUserNoteKey = '';
 
         GM_setValue(LAST_APPLIED_NOTE_KEY, {
             chatId,
@@ -268,29 +264,6 @@
         return '';
     }
 
-    function resetManualUserNoteEditingState() {
-        userNoteManualEditing = false;
-        lastUserNoteInputAt = 0;
-        suppressUserNotePresetSync = false;
-
-        clearTimeout(userNoteSaveSyncTimer);
-        userNoteSaveSyncTimer = null;
-    }
-
-    function setNativeValue(element, value) {
-        const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
-        const prototype = Object.getPrototypeOf(element);
-        const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-
-        if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
-            prototypeValueSetter.call(element, value);
-        } else if (valueSetter) {
-            valueSetter.call(element, value);
-        } else {
-            element.value = value;
-        }
-    }
-
     function getUserNoteRootFromTextarea(textarea) {
         return (
             textarea.closest('[role="dialog"]') ||
@@ -341,6 +314,30 @@
 
             return isLikelyUserNote && !isProbablyChatInput;
         }) || null;
+    }
+
+    function setReactTextareaValue(textarea, value) {
+        const valueSetter = Object.getOwnPropertyDescriptor(textarea, 'value')?.set;
+        const prototype = Object.getPrototypeOf(textarea);
+        const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+
+        if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+            prototypeValueSetter.call(textarea, value);
+        } else if (valueSetter) {
+            valueSetter.call(textarea, value);
+        } else {
+            textarea.value = value;
+        }
+
+        const event = typeof InputEvent === 'function'
+            ? new InputEvent('input', {
+                bubbles: true,
+                inputType: 'insertText',
+                data: null,
+            })
+            : new Event('input', { bubbles: true });
+
+        textarea.dispatchEvent(event);
     }
 
     function updateUserNoteCounterUI(textarea, content, isExtend) {
@@ -415,202 +412,149 @@
         }
     }
 
-    async function syncSavedUserNoteToPreset() {
-        const chatId = parseChatId();
-        if (!chatId) return;
+    function attachUserNoteInputTracker(textarea) {
+        if (!textarea || textarea.dataset.modeUserNoteInputTrackerAttached === '1') return;
 
-        const modeKey = getCurrentAppliedModeForChat();
-
-        if (!modeKey) {
-            console.log('[채팅모드별 유저노트 자동변경] 현재 적용 모드를 알 수 없어 저장된 유저노트를 프리셋에 반영하지 않았습니다.');
-            return;
-        }
-
-        try {
-            const savedUserNote = await fetchCurrentUserNote(chatId);
-
-            const notes = getModeNotes();
-
-            notes[modeKey] = {
-                content: savedUserNote.content || '',
-                isExtend: !!savedUserNote.isExtend,
-                updatedAt: Date.now(),
-            };
-
-            setModeNotes(notes);
-
-            rememberLastAppliedNote(
-                chatId,
-                modeKey,
-                savedUserNote.content || '',
-                !!savedUserNote.isExtend
-            );
-
-            renderModeSlots();
-
-            setStatus(`${getModeLabel(modeKey)} 프리셋에 저장된 유저노트를 반영했습니다.`);
-            showToast(`${getModeLabel(modeKey)} 프리셋 동기화 완료`);
-
-            console.log('[채팅모드별 유저노트 자동변경] 저장된 유저노트를 프리셋에 동기화했습니다.', {
-                chatId,
-                modeKey,
-                length: countChars(savedUserNote.content || ''),
-                isExtend: !!savedUserNote.isExtend,
-            });
-        } catch (err) {
-            console.error('[채팅모드별 유저노트 자동변경] 저장된 유저노트 동기화 실패', err);
-            setStatus('유저노트 저장값을 프리셋에 반영하는 중 오류가 발생했습니다.');
-        }
-    }
-
-    function attachGlobalUserNoteSaveButtonSync() {
-        if (globalSaveButtonSyncAttached) return;
-
-        globalSaveButtonSyncAttached = true;
-
-        document.addEventListener('click', event => {
-            const button = event.target?.closest?.('button');
-            if (!button) return;
-
-            const textarea = findVisibleUserNoteTextarea();
-            if (!textarea) return;
-
-            const root = getUserNoteRootFromTextarea(textarea);
-            if (root && !root.contains(button)) return;
-
-            const buttonText = (button.textContent || '').trim();
-
-            const isSaveButton =
-                buttonText === '저장' ||
-                buttonText === '완료' ||
-                buttonText.includes('저장하기') ||
-                buttonText.includes('적용');
-
-            if (!isSaveButton) return;
-
-            console.log('[채팅모드별 유저노트 자동변경] 크랙 유저노트 저장 버튼 감지');
-
-            clearTimeout(userNoteSaveSyncTimer);
-
-            userNoteSaveSyncTimer = setTimeout(() => {
-                syncSavedUserNoteToPreset();
-            }, 800);
-        }, true);
-    }
-
-    function attachUserNoteManualEditGuard(textarea) {
-        if (!textarea || textarea.dataset.modeUserNoteGuardAttached === '1') return;
-
-        textarea.dataset.modeUserNoteGuardAttached = '1';
-
-        textarea.addEventListener('focus', () => {
-            userNoteManualEditing = true;
-            lastUserNoteInputAt = Date.now();
-        });
+        textarea.dataset.modeUserNoteInputTrackerAttached = '1';
 
         textarea.addEventListener('keydown', () => {
-            userNoteManualEditing = true;
+            if (suppressUserNoteInputTrack) return;
             lastUserNoteInputAt = Date.now();
         });
 
         textarea.addEventListener('input', () => {
-            if (suppressUserNotePresetSync) return;
-
-            userNoteManualEditing = true;
+            if (suppressUserNoteInputTrack) return;
             lastUserNoteInputAt = Date.now();
-
-            // 중요:
-            // input/blur에서는 프리셋에 저장하지 않습니다.
-            // 크랙 유저노트 저장 버튼을 눌렀을 때만 프리셋에 반영합니다.
-        });
-
-        textarea.addEventListener('blur', () => {
-            lastUserNoteInputAt = Date.now();
-
-            setTimeout(() => {
-                userNoteManualEditing = false;
-            }, 700);
         });
     }
 
-    function isUserManuallyEditingUserNote(textarea) {
-        if (!textarea) return false;
-
-        const recentlyTyped = Date.now() - lastUserNoteInputAt < 1200;
-        const focused = document.activeElement === textarea;
-
-        return userNoteManualEditing || recentlyTyped || focused;
+    function isUserRecentlyEditingUserNote() {
+        return Date.now() - lastUserNoteInputAt < 1000;
     }
 
-    function forceUpdateVisibleUserNoteUI() {
+    async function syncVisibleUserNoteUIFromServer() {
         const chatId = parseChatId();
         if (!chatId) return;
-
-        restoreLastAppliedNoteIfNeeded();
-
-        if (chatId !== lastAppliedUserNoteChatId) return;
-        if (!lastAppliedUserNoteContent && lastAppliedUserNoteMode) {
-            // 마지막 적용 모드는 있지만 내용이 빈 경우에도 UI를 빈 값으로 맞출 수 있어야 함
-        } else if (!lastAppliedUserNoteContent) {
-            return;
-        }
 
         const textarea = findVisibleUserNoteTextarea();
         if (!textarea) return;
 
-        attachUserNoteManualEditGuard(textarea);
+        attachUserNoteInputTracker(textarea);
 
-        if (isUserManuallyEditingUserNote(textarea)) {
-            console.log('[채팅모드별 유저노트 자동변경] 사용자가 유저노트 수정 중이라 자동 표시값 갱신을 건너뜁니다.');
+        if (isUserRecentlyEditingUserNote()) {
+            console.log('[채팅모드별 유저노트 자동변경] 사용자가 입력 중이라 유저노트 표시 동기화를 건너뜁니다.');
             return;
         }
 
-        const forceKey = `${chatId}:${lastAppliedUserNoteMode}:${countChars(lastAppliedUserNoteContent)}:${lastAppliedUserNoteIsExtend}`;
+        let serverNote;
 
-        if (lastForcedUiKey === forceKey) {
+        try {
+            serverNote = await fetchCurrentUserNote(chatId);
+        } catch (err) {
+            console.warn('[채팅모드별 유저노트 자동변경] 서버 유저노트 조회 실패, 마지막 적용값으로 대체', err);
+
+            restoreLastAppliedNoteIfNeeded();
+
+            if (lastAppliedUserNoteChatId !== chatId) return;
+
+            serverNote = {
+                content: lastAppliedUserNoteContent || '',
+                isExtend: !!lastAppliedUserNoteIsExtend,
+            };
+        }
+
+        const content = serverNote.content || '';
+        const isExtend = !!serverNote.isExtend;
+        const syncKey = `${chatId}:${countChars(content)}:${isExtend}:${content.slice(0, 40)}`;
+
+        if (lastSyncedUserNoteKey === syncKey && textarea.value === content) {
             return;
         }
 
-        const currentValue = textarea.value || '';
+        if (textarea.value !== content) {
+            suppressUserNoteInputTrack = true;
 
-        if (currentValue !== lastAppliedUserNoteContent) {
-            suppressUserNotePresetSync = true;
-
-            setNativeValue(textarea, lastAppliedUserNoteContent);
-            textarea.dataset.modeUserNoteInjected = '1';
+            setReactTextareaValue(textarea, content);
 
             setTimeout(() => {
-                suppressUserNotePresetSync = false;
+                suppressUserNoteInputTrack = false;
             }, 0);
         }
 
+        updateUserNoteCounterUI(textarea, content, isExtend);
+        updateUserNoteExtendSwitchUI(textarea, isExtend);
         syncUserNoteTextareaHeightLikeCrack(textarea);
-        updateUserNoteCounterUI(textarea, lastAppliedUserNoteContent, lastAppliedUserNoteIsExtend);
-        updateUserNoteExtendSwitchUI(textarea, lastAppliedUserNoteIsExtend);
 
-        lastForcedUiKey = forceKey;
+        lastSyncedUserNoteKey = syncKey;
 
-        console.log('[채팅모드별 유저노트 자동변경] 유저노트 표시 UI 갱신 완료', {
-            mode: lastAppliedUserNoteMode,
+        console.log('[채팅모드별 유저노트 자동변경] 유저노트 창 표시값을 서버값으로 동기화했습니다.', {
             chatId,
-            length: countChars(lastAppliedUserNoteContent),
-            isExtend: lastAppliedUserNoteIsExtend,
+            length: countChars(content),
+            isExtend,
         });
     }
 
-    function scheduleForceUpdateUserNoteUI() {
-        if (forceUiUpdateScheduled) return;
+    function scheduleVisibleUserNoteUiSync() {
+        if (userNoteUiSyncScheduled) return;
 
-        forceUiUpdateScheduled = true;
-
-        setTimeout(() => {
-            forceUpdateVisibleUserNoteUI();
-        }, 150);
+        userNoteUiSyncScheduled = true;
 
         setTimeout(() => {
-            forceUpdateVisibleUserNoteUI();
-            forceUiUpdateScheduled = false;
+            syncVisibleUserNoteUIFromServer();
+        }, 120);
+
+        setTimeout(() => {
+            syncVisibleUserNoteUIFromServer();
+            userNoteUiSyncScheduled = false;
         }, 650);
+    }
+
+    function syncPatchedUserNoteToPreset(chatId, patchedUserNote) {
+        if (!chatId || !patchedUserNote) return;
+
+        const currentChatId = parseChatId();
+        if (currentChatId && currentChatId !== chatId) return;
+
+        const modeKey = getCurrentAppliedModeForChat();
+
+        if (!modeKey) {
+            console.log('[채팅모드별 유저노트 자동변경] 현재 적용 모드를 알 수 없어 PATCH 유저노트를 프리셋에 반영하지 않았습니다.');
+            return;
+        }
+
+        const content = typeof patchedUserNote.content === 'string'
+            ? patchedUserNote.content
+            : '';
+
+        const isExtend = !!patchedUserNote.isExtend;
+
+        const notes = getModeNotes();
+
+        notes[modeKey] = {
+            content,
+            isExtend,
+            updatedAt: Date.now(),
+        };
+
+        setModeNotes(notes);
+
+        rememberLastAppliedNote(
+            chatId,
+            modeKey,
+            content,
+            isExtend
+        );
+
+        renderModeSlots();
+
+        setStatus(`${getModeLabel(modeKey)} 프리셋에 유저노트 수정값을 반영했습니다.`);
+
+        console.log('[채팅모드별 유저노트 자동변경] PATCH 유저노트를 프리셋에 동기화했습니다.', {
+            chatId,
+            modeKey,
+            length: countChars(content),
+            isExtend,
+        });
     }
 
     GM_addStyle(`
@@ -1154,7 +1098,7 @@
             await patchUserNote(chatId, note.content, !!note.isExtend);
 
             rememberLastAppliedNote(chatId, chatMode, note.content, !!note.isExtend);
-            scheduleForceUpdateUserNoteUI();
+            scheduleVisibleUserNoteUiSync();
 
             const confirmed = await fetchCurrentUserNote(chatId).catch(() => null);
 
@@ -1296,6 +1240,10 @@
         const originalFetch = targetWindow.fetch;
 
         targetWindow.fetch = async function (...args) {
+            let shouldSyncPatchedUserNote = false;
+            let patchedChatId = '';
+            let patchedUserNote = null;
+
             try {
                 const [resource, config] = args;
 
@@ -1303,6 +1251,7 @@
                     ? resource
                     : resource?.url;
 
+                const method = String(config?.method || 'GET').toUpperCase();
                 const body = config?.body;
 
                 if (
@@ -1328,11 +1277,53 @@
                         }, 300);
                     }
                 }
+
+                if (
+                    url &&
+                    method === 'PATCH' &&
+                    url.includes('crack-api.wrtn.ai/crack-gen/v3/chats/') &&
+                    typeof body === 'string'
+                ) {
+                    const parsed = JSON.parse(body);
+
+                    if (
+                        parsed?.userNote &&
+                        typeof parsed.userNote === 'object'
+                    ) {
+                        const chatIdMatch = url.match(/\/v3\/chats\/([^/?#]+)/);
+                        patchedChatId = chatIdMatch?.[1] || parseChatId() || '';
+
+                        patchedUserNote = {
+                            content: typeof parsed.userNote.content === 'string'
+                                ? parsed.userNote.content
+                                : '',
+                            isExtend: !!parsed.userNote.isExtend,
+                        };
+
+                        shouldSyncPatchedUserNote = true;
+                    }
+                }
             } catch (err) {
                 console.warn('[채팅모드별 유저노트 자동변경 감지 실패]', err);
             }
 
-            return originalFetch.apply(this, args);
+            const response = await originalFetch.apply(this, args);
+
+            if (shouldSyncPatchedUserNote && patchedChatId && patchedUserNote) {
+                if (response?.ok) {
+                    setTimeout(() => {
+                        syncPatchedUserNoteToPreset(patchedChatId, patchedUserNote);
+                        scheduleVisibleUserNoteUiSync();
+                    }, 100);
+                } else {
+                    console.warn('[채팅모드별 유저노트 자동변경] PATCH 실패로 프리셋 동기화 생략', {
+                        status: response?.status,
+                        patchedChatId,
+                    });
+                }
+            }
+
+            return response;
         };
     }
 
@@ -1419,7 +1410,6 @@
 
     function init() {
         buildUI();
-        attachGlobalUserNoteSaveButtonSync();
 
         restoreLastAppliedNoteIfNeeded();
 
@@ -1443,26 +1433,19 @@
         const userNoteTextarea = findVisibleUserNoteTextarea();
 
         if (userNoteTextarea) {
-            attachUserNoteManualEditGuard(userNoteTextarea);
+            attachUserNoteInputTracker(userNoteTextarea);
         }
 
         if (userNoteTextarea && userNoteTextarea !== lastSeenUserNoteTextarea) {
             lastSeenUserNoteTextarea = userNoteTextarea;
-            lastForcedUiKey = '';
-
-            if (!isUserManuallyEditingUserNote(userNoteTextarea)) {
-                scheduleForceUpdateUserNoteUI();
-            }
+            lastSyncedUserNoteKey = '';
+            scheduleVisibleUserNoteUiSync();
         }
 
         if (!userNoteTextarea && lastSeenUserNoteTextarea) {
             lastSeenUserNoteTextarea = null;
-            lastForcedUiKey = '';
-
-            // 중요:
-            // 유저가 저장하지 않고 유저노트 창을 닫은 경우,
-            // 임시 입력 상태를 버려야 다음에 열 때 저장된 값/마지막 적용값으로 다시 맞춰짐.
-            resetManualUserNoteEditingState();
+            lastSyncedUserNoteKey = '';
+            lastUserNoteInputAt = 0;
         }
 
         if (location.href !== lastUrl) {
@@ -1470,10 +1453,9 @@
 
             lastAutoAppliedModeKey = '';
             lastAutoApplyAt = 0;
-            lastForcedUiKey = '';
             lastSeenUserNoteTextarea = null;
-
-            resetManualUserNoteEditingState();
+            lastSyncedUserNoteKey = '';
+            lastUserNoteInputAt = 0;
 
             setTimeout(() => {
                 init();
